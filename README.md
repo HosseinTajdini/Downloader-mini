@@ -15,7 +15,14 @@
 ## Reassemble
 - just use reassemble.bat
 
-
+## Example 
+1. I can't download this url in iran (https://github.com/glotlabs/gdrive/releases/download/3.9.1/gdrive_windows-x64.zip)
+2. Go to **Action** tab and past your direct link 
+3. Download repo or just your file
+4. Run reassemble.bat
+5. Drag your part folder to reassemble tab for example for me i drag this (20260511_091725) folder
+6. You can see your file .....
+   
 # ⚠️ IMPORTANT WARNINGS ⚠️
 
 ## GitHub Size Limits
