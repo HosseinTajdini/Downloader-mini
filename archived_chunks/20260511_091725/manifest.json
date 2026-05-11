@@ -1,0 +1,13 @@
+{
+  "original_url": "https://github.com/glotlabs/gdrive/releases/download/3.9.1/gdrive_windows-x64.zip",
+  "original_filename": "gdrive_windows-x64.zip",
+  "original_size_mb": 3.43,
+  "chunk_size_mb": 50,
+  "total_chunks": 1,
+  "chunks": [
+    "gdrive_windows-x64.part001.zip"
+  ],
+  "reconstruct_linux": "cat chunks/*.part* > reconstructed_file",
+  "reconstruct_windows": "copy /b chunks\\*.part* reconstructed_file",
+  "warning": "Total size should stay under 1GB to avoid GitHub issues"
+}
