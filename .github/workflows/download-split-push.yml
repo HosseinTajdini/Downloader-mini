@@ -1,0 +1,235 @@
+name: Download, Split & Push to Repository
+
+on:
+  workflow_dispatch:
+    inputs:
+      file_url:
+        description: 'Direct download URL of the file'
+        required: true
+        type: string
+      output_folder:
+        description: 'Folder name for chunks'
+        required: false
+        type: string
+        default: 'chunks'
+
+jobs:
+  download-split-push:
+    runs-on: ubuntu-latest
+    
+    permissions:
+      contents: write
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      
+      - name: Install dependencies
+        run: pip install requests
+      
+      - name: Download and split file
+        env:
+          FILE_URL: ${{ github.event.inputs.file_url }}
+          OUTPUT_FOLDER: ${{ github.event.inputs.output_folder }}
+        run: |
+          python - << 'EOF'
+          import os
+          import requests
+          import math
+          import json
+          import sys
+          from pathlib import Path
+          
+          # === CONFIGURATION ===
+          FILE_URL = os.environ.get('FILE_URL')
+          OUTPUT_FOLDER = os.environ.get('OUTPUT_FOLDER', 'chunks')
+          CHUNK_SIZE_MB = 50  # Fixed chunk size
+          
+          # GitHub limits (warning threshold)
+          MAX_RECOMMENDED_MB = 700
+          MAX_ALLOWED_MB = 850
+          
+          if not FILE_URL:
+              raise ValueError("ERROR: FILE_URL environment variable is not set")
+          
+          print("=" * 50)
+          print("⚠️  GITHUB SIZE WARNING ⚠️")
+          print("=" * 50)
+          print("GitHub repository limits:")
+          print("   • Recommended max file per repo: 1GB")
+          print("   • Best practice: Keep total pushed files under 700-800MB")
+          print(f"   • Chunk size: {CHUNK_SIZE_MB} MB (fixed)")
+          print("   • Total pushed size = 50MB × number_of_chunks")
+          print("=" * 50)
+          
+          # === CHECK FILE SIZE FIRST ===
+          def get_file_size_from_url(url):
+              try:
+                  response = requests.head(url, allow_redirects=True)
+                  response.raise_for_status()
+                  return int(response.headers.get('content-length', 0))
+              except Exception:
+                  response = requests.get(url, stream=True)
+                  response.raise_for_status()
+                  return int(response.headers.get('content-length', 0))
+          
+          print("\n📏 Checking file size before download...")
+          try:
+              total_bytes = get_file_size_from_url(FILE_URL)
+              total_mb = total_bytes / (1024 * 1024)
+              num_chunks_estimate = math.ceil(total_mb / CHUNK_SIZE_MB)
+              
+              print(f"📊 File size: {total_mb:.2f} MB")
+              print(f"📦 Estimated chunks: {num_chunks_estimate}")
+              
+              if total_mb > MAX_ALLOWED_MB:
+                  print("\n" + "=" * 50)
+                  print("❌ ERROR: FILE TOO LARGE!")
+                  print("=" * 50)
+                  print(f"Your file: {total_mb:.2f} MB")
+                  print(f"GitHub safe limit: {MAX_ALLOWED_MB} MB")
+                  print("\n⚠️  DO NOT PROCEED with this file!")
+                  print("GitHub may reject or suspend your repository.")
+                  print("\nSuggestions:")
+                  print("  1. Use Git LFS (Large File Storage)")
+                  print("  2. Use external storage (Google Drive, Mega, etc.)")
+                  print("  3. Split file manually before uploading")
+                  sys.exit(1)
+              elif total_mb > MAX_RECOMMENDED_MB:
+                  print("\n" + "=" * 50)
+                  print("⚠️  WARNING: FILE IS LARGE!")
+                  print("=" * 50)
+                  print(f"Your file: {total_mb:.2f} MB")
+                  print(f"Recommended max: {MAX_RECOMMENDED_MB} MB")
+                  print("\n⚠️  Continuing with caution...")
+              else:
+                  print(f"\n✅ File size is within safe limits ({total_mb:.2f} MB < {MAX_RECOMMENDED_MB} MB)")
+          except Exception as e:
+              print(f"⚠️  Could not determine file size: {e}")
+              print("Proceeding with download...")
+          
+          # === DOWNLOAD FUNCTION ===
+          def download_file(url, output_path):
+              print(f"\n📥 Downloading from: {url}")
+              response = requests.get(url, stream=True)
+              response.raise_for_status()
+              
+              total_size = int(response.headers.get('content-length', 0))
+              downloaded = 0
+              
+              with open(output_path, 'wb') as file:
+                  for chunk in response.iter_content(chunk_size=8192):
+                      if chunk:
+                          file.write(chunk)
+                          downloaded += len(chunk)
+                          if total_size:
+                              percent = (downloaded / total_size) * 100
+                              print(f"\r⬇️  Progress: {percent:.1f}%", end='')
+              
+              print(f"\n✅ Downloaded: {output_path}")
+              return output_path
+          
+          # === SPLIT FUNCTION ===
+          def split_file(input_file, chunk_size_mb, output_folder):
+              chunk_size_bytes = chunk_size_mb * 1024 * 1024
+              file_size = os.path.getsize(input_file)
+              num_chunks = math.ceil(file_size / chunk_size_bytes)
+              
+              print(f"\n📦 File size: {file_size / (1024*1024):.2f} MB")
+              print(f"✂️  Splitting into {num_chunks} chunks ({chunk_size_mb} MB each)")
+              
+              Path(output_folder).mkdir(parents=True, exist_ok=True)
+              
+              base_name = Path(input_file).stem
+              extension = Path(input_file).suffix
+              chunks_list = []
+              
+              with open(input_file, 'rb') as file:
+                  for i in range(num_chunks):
+                      chunk_filename = f"{base_name}.part{i+1:03d}{extension}"
+                      chunk_path = Path(output_folder) / chunk_filename
+                      
+                      chunk_data = file.read(chunk_size_bytes)
+                      with open(chunk_path, 'wb') as chunk_file:
+                          chunk_file.write(chunk_data)
+                      
+                      actual_mb = len(chunk_data) / (1024*1024)
+                      print(f"   ✅ {chunk_filename} ({actual_mb:.2f} MB)")
+                      chunks_list.append(chunk_filename)
+              
+              # Create manifest
+              manifest = {
+                  "original_url": FILE_URL,
+                  "original_filename": input_file,
+                  "original_size_mb": round(file_size / (1024*1024), 2),
+                  "chunk_size_mb": chunk_size_mb,
+                  "total_chunks": num_chunks,
+                  "chunks": chunks_list,
+                  "reconstruct_linux": f"cat {output_folder}/*.part* > reconstructed_file",
+                  "reconstruct_windows": f"copy /b {output_folder}\\*.part* reconstructed_file",
+                  "warning": "Total size should stay under 1GB to avoid GitHub issues"
+              }
+              
+              manifest_path = Path(output_folder) / "manifest.json"
+              with open(manifest_path, 'w') as f:
+                  json.dump(manifest, f, indent=2)
+              
+              print(f"\n📋 Manifest: {manifest_path}")
+              return chunks_list
+          
+          # === MAIN ===
+          print("\n🚀 Starting process...\n")
+          
+          # Download
+          filename = FILE_URL.split('/')[-1] or 'downloaded_file'
+          downloaded_file = download_file(FILE_URL, filename)
+          
+          # Split
+          split_file(downloaded_file, CHUNK_SIZE_MB, OUTPUT_FOLDER)
+          
+          # Cleanup
+          os.remove(downloaded_file)
+          
+          print("\n" + "=" * 50)
+          print("✅ SUCCESS!")
+          print("=" * 50)
+          print(f"📁 Chunks saved in: {OUTPUT_FOLDER}/")
+          print(f"📄 Manifest file included")
+          print("\n⚠️  REMINDER: Total repo size should stay under 1GB")
+          print("=" * 50)
+          EOF
+      
+      - name: Configure Git
+        run: |
+          git config --global user.name 'github-actions[bot]'
+          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+      
+      - name: Commit and push
+        run: |
+          TIMESTAMP=$(date +'%Y%m%d_%H%M%S')
+          
+          # Pull latest changes
+          git pull origin main --rebase || true
+          
+          # Create timestamped archive folder
+          ARCHIVE_DIR="archived_chunks/$TIMESTAMP"
+          mkdir -p "$ARCHIVE_DIR"
+          
+          # Move chunks to archive
+          if [ -d "${{ github.event.inputs.output_folder }}" ]; then
+            mv ${{ github.event.inputs.output_folder }}/* "$ARCHIVE_DIR/" 2>/dev/null || true
+            rmdir ${{ github.event.inputs.output_folder }} 2>/dev/null || true
+          fi
+          
+          git add archived_chunks/
+          git commit -m "Add file chunks from ${{ github.event.inputs.file_url }} (${TIMESTAMP})" || echo "No changes"
+          git push origin main
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
